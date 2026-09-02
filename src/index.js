@@ -112,6 +112,8 @@ client.on('interactionCreate', async (interaction) => {
     }
   } catch (err) {
     logger.error('Error handling interaction:', err);
+    // Log full stack for diagnosis
+    console.error('FULL STACK:', err && err.stack);
 
     // Try to reply so the user isn't left hanging
     try {
