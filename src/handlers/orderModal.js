@@ -67,7 +67,7 @@ function showStepTwo(interaction, draft) {
     .setLabel('Pages you want')
     .setStyle(TextInputStyle.Paragraph)
     .setPlaceholder(
-      'Default: Home, Fleet, Routes, Careers, Join/Apply, News, Rules, Affiliates. List any you want added or removed.'
+      'Default: Home, Fleet, Routes, Careers, Join/Apply, News, Rules, Affiliates. List any you want added.'
     )
     .setRequired(true);
 
@@ -76,7 +76,7 @@ function showStepTwo(interaction, draft) {
     .setLabel('Screenshots (in-game scenes)')
     .setStyle(TextInputStyle.Paragraph)
     .setPlaceholder(
-      'Paste image URLs or links to your in-game scenes: Takeoff, Landing, Taxi, fleet… If none yet, type "none".'
+      'Image URLs: Takeoff, Landing, Taxi, fleet… If none, type "none".'
     )
     .setRequired(false);
 
