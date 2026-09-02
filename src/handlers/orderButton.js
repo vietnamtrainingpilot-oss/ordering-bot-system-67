@@ -1,141 +1,193 @@
 const {
   ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   EmbedBuilder,
 } = require('discord.js');
 const { COLORS, MODALS } = require('../config');
 const logger = require('../utils/logger');
 
-/**
- * Customer clicked "🌐 Order" in the order channel.
- *
- * Flow (Application-System style):
- *   1. Acknowledge the click in the server (ephemeral).
- *   2. DM the user.
- *   3. In the DM, show a "Start Your Order" button which opens the order
- *      modal (modal custom_id = ORDER_FORM).
- *
- * Modals CANNOT be opened directly from a server button click by the bot —
- * they must be triggered by an interaction in the same context. So we route
- * the user into a DM where a modal can be opened from a DM button.
- */
-async function handleOrderButton(interaction) {
-  const user = interaction.user;
+// Store partial order data between modal steps (in memory).
+// Key: user id → accumulated fields.
+const orderDraft = new Map();
 
-  // Quick ack in the channel so the button click registers
-  await interaction.reply({
-    content: 'Opening your order form… check your DMs ✉️',
-    ephemeral: true,
-  });
-
-  // Prevent duplicates / respect existing interactions (tracked in memory)
-  if (interaction.client.orderLock?.has(user.id)) {
-    return interaction
-      .followUp({
-        content: 'You already have an open order form. Check your DMs.',
-        ephemeral: true,
-      })
-      .catch(() => {});
+function getFields(interaction) {
+  const values = {};
+  for (const row of interaction.fields.fields.values()) {
+    values[row.customId] = row.value;
   }
-
-  try {
-    // Create the DM channel
-    const dm = await user.createDM();
-
-    if (!interaction.client.orderLock) {
-      interaction.client.orderLock = new Set();
-    }
-    interaction.client.orderLock.add(user.id);
-
-    const embed = new EmbedBuilder()
-      .setColor(COLORS.BRAND)
-      .setTitle('🚀 Let\'s Build Your Website')
-      .setDescription(
-        `Hi **${user.username}**, welcome to **PTC Web Service**!\n\n` +
-          `Click **Start Your Order** below and fill out the form. This is where we collect your branding so our designer can build your site.\n\n` +
-          `Everything you share in this DM is **private** — only our team sees your order.`
-      )
-      .setFooter({ text: 'Click Start Your Order to continue' });
-
-    const startButton = new ButtonBuilder()
-      .setCustomId('order_start')
-      .setLabel('✏️ Start Your Order')
-      .setStyle(ButtonStyle.Primary);
-
-    const row = new ActionRowBuilder().addComponents(startButton);
-
-    await dm.send({ embeds: [embed], components: [row] });
-  } catch (err) {
-    logger.error(`Could not DM user ${user.id}:`, err.message);
-    interaction.client.orderLock?.delete(user.id);
-    await interaction
-      .followUp({
-        content:
-          'I couldn\'t DM you — open your DMs (Settings → Privacy → Allow direct messages from server members) and try again.',
-        ephemeral: true,
-      })
-      .catch(() => {});
-  }
+  return values;
 }
 
 /**
- * User clicked "Start Your Order" in the DM → open the order modal.
+ * Route to the correct modal step. Called from index.js on any ORDER_FORM
+ * submission. If the profile is "missing", it means this is the follow-up
+ * modal (Step 2 / Step 3, same custom_id) — we detect by checking which
+ * custom IDs are present.
  */
-async function handleOrderStart(interaction) {
-  const { ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } =
-    require('discord.js');
+async function handleOrderModal(interaction) {
+  const fields = getFields(interaction);
+  const draft = orderDraft.get(interaction.user.id) || {};
+  Object.assign(draft, fields);
+  orderDraft.set(interaction.user.id, draft);
 
+  const hasBranding = draft.order_branding !== undefined;
+
+  // Step 1 submitted → go to Step 2
+  if (hasBranding && draft.order_pages === undefined) {
+    return showStepTwo(interaction, draft);
+  }
+
+  // Step 2 submitted → go to Step 3 (notes)
+  if (draft.order_pages !== undefined && draft.order_notes === undefined) {
+    return showStepThree(interaction, draft);
+  }
+
+  // Step 3 submitted → finalize order
+  return finalizeOrder(interaction, draft);
+}
+
+function showStepTwo(interaction, draft) {
   const modal = new ModalBuilder()
     .setCustomId(MODALS.ORDER_FORM)
-    .setTitle('Website Order Form');
+    .setTitle('Order Form — Step 2 of 3');
 
-  const airlineName = new TextInputBuilder()
-    .setCustomId('order_airline')
-    .setLabel('Airline name')
+  const reference = new TextInputBuilder()
+    .setCustomId('order_reference')
+    .setLabel('1-2 airlines whose feel you want')
     .setStyle(TextInputStyle.Short)
-    .setPlaceholder('e.g. Pacific Sky Airlines')
-    .setRequired(true);
-
-  const groupLink = new TextInputBuilder()
-    .setCustomId('order_group')
-    .setLabel('PTFS group link')
-    .setStyle(TextInputStyle.Short)
-    .setPlaceholder('https://www.roblox.com/groups/…')
-    .setRequired(true);
-
-  const discordInvite = new TextInputBuilder()
-    .setCustomId('order_discord')
-    .setLabel('Discord invite link')
-    .setStyle(TextInputStyle.Short)
-    .setPlaceholder('https://discord.gg/…')
-    .setRequired(true);
-
-  const branding = new TextInputBuilder()
-    .setCustomId('order_branding')
-    .setLabel('Logo / brand colors')
-    .setStyle(TextInputStyle.Paragraph)
     .setPlaceholder(
-      'Logo link + brand colors (hex). If none, type "design for me".'
+      'e.g. "Singapore Airlines" or "suggest options based on my tone"'
     )
     .setRequired(false);
 
-  const tone = new TextInputBuilder()
-    .setCustomId('order_tone')
-    .setLabel('Tone of the site')
-    .setStyle(TextInputStyle.Short)
-    .setPlaceholder('flag-carrier prestige / budget-friendly / cargo / charter…')
+  const pages = new TextInputBuilder()
+    .setCustomId('order_pages')
+    .setLabel('Pages you want')
+    .setStyle(TextInputStyle.Paragraph)
+    .setPlaceholder(
+      'Default: Home, Fleet, Routes, Careers, Join/Apply, News, Rules, Affiliates. List any you want added.'
+    )
     .setRequired(true);
 
-  const row1 = new ActionRowBuilder().addComponents(airlineName);
-  const row2 = new ActionRowBuilder().addComponents(groupLink);
-  const row3 = new ActionRowBuilder().addComponents(discordInvite);
-  const row4 = new ActionRowBuilder().addComponents(branding);
-  const row5 = new ActionRowBuilder().addComponents(tone);
+  const screenshots = new TextInputBuilder()
+    .setCustomId('order_screenshots')
+    .setLabel('Screenshots (in-game scenes)')
+    .setStyle(TextInputStyle.Paragraph)
+    .setPlaceholder(
+      'Image URLs: Takeoff, Landing, Taxi, fleet… If none, type "none".'
+    )
+    .setRequired(false);
 
-  modal.addComponents(row1, row2, row3, row4, row5);
+  const row1 = new ActionRowBuilder().addComponents(reference);
+  const row2 = new ActionRowBuilder().addComponents(pages);
+  const row3 = new ActionRowBuilder().addComponents(screenshots);
 
-  await interaction.showModal(modal);
+  modal.addComponents(row1, row2, row3);
+  return interaction.showModal(modal);
 }
 
-module.exports = { handleOrderButton, handleOrderStart };
+function showStepThree(interaction, draft) {
+  const modal = new ModalBuilder()
+    .setCustomId(MODALS.ORDER_FORM)
+    .setTitle('Order Form — Step 3 of 3');
+
+  const notes = new TextInputBuilder()
+    .setCustomId('order_notes')
+    .setLabel('Anything else? (optional)')
+    .setStyle(TextInputStyle.Paragraph)
+    .setPlaceholder('Extra info, deadlines, special requests…')
+    .setRequired(false);
+
+  const row1 = new ActionRowBuilder().addComponents(notes);
+  modal.addComponents(row1);
+  return interaction.showModal(modal);
+}
+
+async function finalizeOrder(interaction, draft) {
+  // Deliver order to staff channel and DM the customer a confirmation
+  const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } =
+    require('discord.js');
+  const config = require('../config');
+
+  // Clear the draft lock
+  interaction.client.orderLock?.delete(interaction.user.id);
+
+  // Send confirmation to the customer's DM
+  const confirmEmbed = new EmbedBuilder()
+    .setColor(COLORS.SUCCESS)
+    .setTitle('✅ Order Received!')
+    .setDescription(
+      `Thanks **${interaction.user.username}**! Your order for **${draft.order_airline}** has been submitted to our team.\n\n` +
+        `📦 **Estimated delivery:** 48 hours to 1 week depending on current orders.\n` +
+        `We'll update you here once your website is ready.`
+    );
+
+  await interaction.reply({ embeds: [confirmEmbed] });
+
+  // Post to staff channel
+  const staffChannelId = process.env.STAFF_CHANNEL_ID;
+  if (!staffChannelId) {
+    logger.warn('STAFF_CHANNEL_ID not configured — order not posted to staff.');
+    return;
+  }
+
+  const staffChannel = interaction.client.channels.cache.get(staffChannelId);
+  if (!staffChannel) {
+    logger.warn(`Staff channel ${staffChannelId} not found in cache.`);
+    return;
+  }
+
+  const pagesLabel = draft.order_pages || 'Home, Fleet, Routes, Careers, Join/Apply, News, Rules, Affiliates';
+  const reference = draft.order_reference || 'Let us suggest';
+  const screenshots = draft.order_screenshots || 'none yet';
+
+  const orderEmbed = new EmbedBuilder()
+    .setColor(COLORS.INFO)
+    .setTitle('📦 New Website Order')
+    .setDescription(`**Order from:** <@${interaction.user.id}>`)
+    .addFields(
+      { name: '✈️ Airline', value: draft.order_airline || '—', inline: true },
+      { name: 'PTFS Group', value: draft.order_group || '—', inline: true },
+      {
+        name: 'Discord Invite',
+        value: draft.order_discord || '—',
+        inline: true,
+      },
+      { name: 'Branding & Colors', value: draft.order_branding || 'Design for me', inline: false },
+      { name: 'Tone', value: draft.order_tone || '—', inline: true },
+      { name: 'Reference Airlines', value: reference.slice(0, 1024), inline: true },
+      { name: 'Screenshots', value: `\`\`\`\n${screenshots.slice(0, 900)}\n\`\`\``, inline: false },
+      { name: 'Pages', value: pagesLabel.slice(0, 1024), inline: false },
+      { name: 'Notes', value: (draft.order_notes || 'None').slice(0, 1024), inline: false }
+    )
+    .setTimestamp()
+    .setFooter({ text: `Order by ${interaction.user.tag}` });
+
+  const complete = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(config.STAFF_ACTION.COMPLETE)
+      .setLabel('✅ Complete Order')
+      .setStyle(ButtonStyle.Success)
+  );
+  const deny = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(config.STAFF_ACTION.DENY)
+      .setLabel('❌ Deny')
+      .setStyle(ButtonStyle.Danger)
+  );
+  const askMore = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(config.STAFF_ACTION.ASK_MORE)
+      .setLabel('❓ Need More Info')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  await staffChannel.send({
+    embeds: [orderEmbed],
+    components: [complete, deny, askMore],
+  });
+}
+
+module.exports = { handleOrderModal, orderDraft };
