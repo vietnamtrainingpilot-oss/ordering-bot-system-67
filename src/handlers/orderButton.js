@@ -116,7 +116,7 @@ async function handleOrderStart(interaction) {
     .setLabel('Logo / brand colors')
     .setStyle(TextInputStyle.Paragraph)
     .setPlaceholder(
-      'Describe or attach your logo link + brand colors (hex codes). If none, type "design for me" and we\'ll create them from your livery.'
+      'Logo link + brand colors (hex). If none, type "design for me".'
     )
     .setRequired(false);
 
